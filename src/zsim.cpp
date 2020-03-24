@@ -25,10 +25,11 @@
  */
 
 /* The Pin-facing part of the simulator */
-
+#include "mmap_addresses.h"
 #include "zsim.h"
 #include <algorithm>
-#include <bits/signum.h>
+#include <signal.h>
+//#include <bits/signum.h>
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <fstream>
@@ -163,14 +164,49 @@ VOID FFThread(VOID* arg);
  * sparingly.
  */
 
+//MMAP FILE TRACKING
+
+list<pair<unsigned long, unsigned long>> mmap_address_ranges;
+
+list<string> file_names;
+list<int> mmaped_files_fd;
+
+void get_mapped_file_names()
+{
+        ifstream prfile("prfiles");
+        string line;
+        while(prfile>>line)
+                file_names.push_front(line);
+
+        ifstream pufile("pufiles");
+        while(pufile>>line)
+                file_names.push_front(line);
+}
+//---------------------
+
+
+
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED; //minimize false sharing
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectLoadSingle(THREADID tid, ADDRINT addr) {
+    for(auto v : mmap_address_ranges){
+        if ((unsigned long) addr >= v.first &&
+            (unsigned long) addr <= v.second){
+            info("Indirect load Single %p\n", (void*)addr);
+        }
+    }
     fPtrs[tid].loadPtr(tid, addr);
 }
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectStoreSingle(THREADID tid, ADDRINT addr) {
     fPtrs[tid].storePtr(tid, addr);
+        for(auto v : mmap_address_ranges){
+        if ((unsigned long) addr >= v.first &&
+            (unsigned long) addr <= v.second){
+            info("Indirect store Single %p\n", (void*)addr);
+        }
+    }
+
 }
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectBasicBlock(THREADID tid, ADDRINT bblAddr, BblInfo* bblInfo) {
@@ -183,10 +219,24 @@ VOID PIN_FAST_ANALYSIS_CALL IndirectRecordBranch(THREADID tid, ADDRINT branchPc,
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectPredLoadSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     fPtrs[tid].predLoadPtr(tid, addr, pred);
+        for(auto v : mmap_address_ranges){
+        if ((unsigned long) addr >= v.first &&
+            (unsigned long) addr <= v.second){
+            info("Predicated load Single %p\n", (void*)addr);
+        }
+    }
+
 }
 
 VOID PIN_FAST_ANALYSIS_CALL IndirectPredStoreSingle(THREADID tid, ADDRINT addr, BOOL pred) {
     fPtrs[tid].predStorePtr(tid, addr, pred);
+        for(auto v : mmap_address_ranges){
+        if ((unsigned long) addr >= v.first &&
+            (unsigned long) addr <= v.second){
+            info("Predicated store Single %p\n", (void*)addr);
+        }
+    }
+
 }
 
 
@@ -575,7 +625,7 @@ VOID Instruction(INS ins) {
      * is never emitted by any x86 compiler, as they use other (recommended) nop
      * instructions or sequences.
      */
-    if (INS_IsXchg(ins) && INS_OperandReg(ins, 0) == REG_RCX && INS_OperandReg(ins, 1) == REG_RCX) {
+    if (INS_IsXchg(ins) && INS_OperandReg(ins, 0) ==LEVEL_BASE::REG_RCX && INS_OperandReg(ins, 1) ==LEVEL_BASE::REG_RCX) {
         //info("Instrumenting magic op");
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) HandleMagicOp, IARG_THREAD_ID, IARG_REG_VALUE, REG_ECX, IARG_END);
     }
@@ -784,11 +834,11 @@ VOID VdsoInstrument(INS ins) {
     if (unlikely(insAddr >= vdsoStart && insAddr < vdsoEnd)) {
         if (vdsoEntryMap.find(insAddr) != vdsoEntryMap.end()) {
             VdsoFunc func = vdsoEntryMap[insAddr];
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) VdsoEntryPoint, IARG_THREAD_ID, IARG_UINT32, (uint32_t)func, IARG_REG_VALUE, REG_RDI, IARG_REG_VALUE, REG_RSI, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) VdsoEntryPoint, IARG_THREAD_ID, IARG_UINT32, (uint32_t)func, IARG_REG_VALUE, LEVEL_BASE::REG_RDI, IARG_REG_VALUE, LEVEL_BASE::REG_RSI, IARG_END);
         } else if (INS_IsCall(ins)) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) VdsoCallPoint, IARG_THREAD_ID, IARG_END);
         } else if (INS_IsRet(ins)) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) VdsoRetPoint, IARG_THREAD_ID, IARG_REG_REFERENCE, REG_RAX /* return val */, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) VdsoRetPoint, IARG_THREAD_ID, IARG_REG_REFERENCE, LEVEL_BASE::REG_RAX /* return val */, IARG_END);
         }
     }
 
@@ -885,10 +935,33 @@ VOID ThreadFini(THREADID tid, const CONTEXT *ctxt, INT32 flags, VOID *v) {
 }
 
 //Need to remove ourselves from running threads in case the syscall is blocking
+unsigned long ret_val;
+unsigned long mmap_size = 0;
+
 VOID SyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
     bool isNopThread = fPtrs[tid].type == FPTR_NOP;
     bool isRetryThread = fPtrs[tid].type == FPTR_RETRY;
+    
+    ADDRINT syscall_num = PIN_GetSyscallNumber(ctxt, std);
+    ADDRINT arg1 = PIN_GetSyscallArgument(ctxt, std, 1);
 
+    //MMAP address range track
+    if (syscall_num == 9) {
+        ADDRINT arg4 = PIN_GetSyscallArgument(ctxt, std, 4);
+        if(std::find(mmaped_files_fd.begin(), mmaped_files_fd.end(), arg4) != mmaped_files_fd.end()){
+            ret_val = 9;
+            mmap_size = (unsigned long) arg1;
+        }
+
+    }
+
+    if (syscall_num == 257) {
+        ADDRINT arg1 = PIN_GetSyscallArgument(ctxt, std, 1);
+            for(auto s : file_names)
+                if(s.compare((const char*) arg1) == 0)
+                    ret_val = 257;
+    }
+    //-----------------------
     if (!isRetryThread) {
         VirtSyscallEnter(tid, ctxt, std, procTreeNode->getPatchRoot(), isNopThread);
     }
@@ -902,6 +975,7 @@ VOID SyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
      * treated as a single syscall scheduling-wise (no second leave without
      * join).
      */
+
     if (fPtrs[tid].type != FPTR_JOIN && !zinfo->blockingSyscalls) {
         uint32_t cid = getCid(tid);
         // set an invalid cid, ours is property of the scheduler now!
@@ -918,6 +992,20 @@ VOID SyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
 
 VOID SyscallExit(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
     assert(inSyscall[tid]); inSyscall[tid] = false;
+
+    //MMAP FILE tracking
+    if (ret_val == 257) {
+        info("FD to be mmaped 0x%lx", (unsigned long) PIN_GetSyscallReturn(ctxt, std));
+        mmaped_files_fd.push_front(PIN_GetSyscallReturn(ctxt, std));
+        ret_val = 0;
+    }
+    if (ret_val == 9) {
+        info("mmaped file address: 0x%lx\n", (unsigned long) (PIN_GetSyscallReturn(ctxt, std)));
+        mmap_address_ranges.push_front(make_pair((unsigned long) (PIN_GetSyscallReturn(ctxt, std)),
+                                        ((unsigned long) PIN_GetSyscallReturn(ctxt, std)) + mmap_size));
+        ret_val = 0;
+    }
+
 
     PostPatchAction ppa = VirtSyscallExit(tid, ctxt, std);
     if (ppa == PPA_USE_JOIN_PTRS) {
@@ -1433,7 +1521,9 @@ int main(int argc, char *argv[]) {
 
     //Register an internal exception handler (ASAP, to catch segfaults in init)
     PIN_AddInternalExceptionHandler(InternalExceptionHandler, nullptr);
-
+    //MMAP FILE TRACKING
+    get_mapped_file_names();
+    //----------------------
     procIdx = KnobProcIdx.Value();
     char header[64];
     snprintf(header, sizeof(header), "[S %d] ", procIdx);

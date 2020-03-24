@@ -30,7 +30,7 @@
 #include "cache.h"
 #include "galloc.h"
 #include "zsim.h"
-
+#include "mmap_addresses.h"
 /* Extends Cache with an L0 direct-mapped cache, optimized to hell for hits
  *
  * L1 lookups are dominated by several kinds of overhead (grab the cache locks,
@@ -40,6 +40,9 @@
  * and then go through the normal access path. Because there is one line per set,
  * it is fine to do this without grabbing a lock.
  */
+
+extern list<pair<unsigned long, unsigned long>> mmap_address_ranges;
+
 
 class FilterCache : public Cache {
     private:
@@ -105,8 +108,16 @@ class FilterCache : public Cache {
             uint64_t availCycle = filterArray[idx].availCycle; //read before, careful with ordering to avoid timing races
             if (vLineAddr == filterArray[idx].rdAddr) {
                 fGETSHit++;
+
                 return MAX(curCycle, availCycle);
+
             } else {
+                for(auto v : mmap_address_ranges){
+                    if ((unsigned long) vAddr >= v.first &&
+                        (unsigned long) vAddr <= v.second){
+                        info("Load miss %p %lu\n", (void*)vAddr, curCycle);
+                    }
+                }
                 return replace(vLineAddr, idx, true, curCycle);
             }
         }
@@ -121,9 +132,17 @@ class FilterCache : public Cache {
                 //filterArray[idx].availCycle = curCycle; //do optimistic store-load forwarding
                 return MAX(curCycle, availCycle);
             } else {
+                for(auto v : mmap_address_ranges){
+                    if ((unsigned long) vAddr >= v.first &&
+                        (unsigned long) vAddr <= v.second){
+                        info("store miss %p\n", (void*)vAddr);
+                    }
+                }
+                
                 return replace(vLineAddr, idx, false, curCycle);
             }
         }
+        //generate dummy accesses here.
 
         uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
             Address pLineAddr = procMask | vLineAddr;
