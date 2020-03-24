@@ -25,7 +25,10 @@
  */
 
 /* The Pin-facing part of the simulator */
+//MMAP_TRACK global declaration of address range list
 #include "mmap_addresses.h"
+
+
 #include "zsim.h"
 #include <algorithm>
 #include <signal.h>
@@ -187,7 +190,8 @@ void get_mapped_file_names()
 
 
 InstrFuncPtrs fPtrs[MAX_THREADS] ATTR_LINE_ALIGNED; //minimize false sharing
-
+//MMAP_TRACK These prints are only for sanity check, the real prints should be
+//done during l1 misses.
 VOID PIN_FAST_ANALYSIS_CALL IndirectLoadSingle(THREADID tid, ADDRINT addr) {
     for(auto v : mmap_address_ranges){
         if ((unsigned long) addr >= v.first &&
@@ -945,7 +949,7 @@ VOID SyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
     ADDRINT syscall_num = PIN_GetSyscallNumber(ctxt, std);
     ADDRINT arg1 = PIN_GetSyscallArgument(ctxt, std, 1);
 
-    //MMAP address range track
+    //MMAP_TRACK address range track
     if (syscall_num == 9) {
         ADDRINT arg4 = PIN_GetSyscallArgument(ctxt, std, 4);
         if(std::find(mmaped_files_fd.begin(), mmaped_files_fd.end(), arg4) != mmaped_files_fd.end()){
@@ -993,7 +997,7 @@ VOID SyscallEnter(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
 VOID SyscallExit(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
     assert(inSyscall[tid]); inSyscall[tid] = false;
 
-    //MMAP FILE tracking
+    //MMAP_TRACK creating the address range list
     if (ret_val == 257) {
         info("FD to be mmaped 0x%lx", (unsigned long) PIN_GetSyscallReturn(ctxt, std));
         mmaped_files_fd.push_front(PIN_GetSyscallReturn(ctxt, std));
@@ -1005,7 +1009,7 @@ VOID SyscallExit(THREADID tid, CONTEXT *ctxt, SYSCALL_STANDARD std, VOID *v) {
                                         ((unsigned long) PIN_GetSyscallReturn(ctxt, std)) + mmap_size));
         ret_val = 0;
     }
-
+    //---------------------
 
     PostPatchAction ppa = VirtSyscallExit(tid, ctxt, std);
     if (ppa == PPA_USE_JOIN_PTRS) {

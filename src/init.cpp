@@ -250,6 +250,7 @@ BaseCache* BuildCacheBank(Config& config, const string& prefix, g_string& name, 
         panic("This should not happen, we already checked for it!"); //unless someone changed arrayStr...
     }
 
+    //MMAP_TRACK Comments regarding the latency, terminal caches are instantiated as FilterCache (line 287) 
     //Latency
     uint32_t latency = config.get<uint32_t>(prefix + "latency", 10);
     uint32_t accLat = (isTerminal)? 0 : latency; //terminal caches has no access latency b/c it is assumed accLat is hidden by the pipeline

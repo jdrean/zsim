@@ -48,10 +48,7 @@ uint64_t SimpleCore::getPhaseCycles() const {
 }
 
 void SimpleCore::load(Address addr) {
-    //info ("Before %lu", curCycle);
-    curCycle = l1d->load(addr, curCycle);
-    //info ("after %lu", curCycle);
-    
+    curCycle = l1d->load(addr, curCycle);    
 }
 
 void SimpleCore::store(Address addr) {
@@ -61,6 +58,8 @@ void SimpleCore::store(Address addr) {
 void SimpleCore::bbl(Address bblAddr, BblInfo* bblInfo) {
     //info("BBL %s %p", name.c_str(), bblInfo);
     //info("%d %d", bblInfo->instrs, bblInfo->bytes);
+    //MMAP_TRACK How the latency of every instruction is counted,
+    //this function is called whenever a basic block is executed.
     instrs += bblInfo->instrs;
     curCycle += bblInfo->instrs;
     Address endBblAddr = bblAddr + bblInfo->bytes;

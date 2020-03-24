@@ -30,6 +30,7 @@
 #include "cache.h"
 #include "galloc.h"
 #include "zsim.h"
+//MMAP_TRACK the address range list
 #include "mmap_addresses.h"
 /* Extends Cache with an L0 direct-mapped cache, optimized to hell for hits
  *
@@ -101,7 +102,8 @@ class FilterCache : public Cache {
             initCacheStats(cacheStat);
             parentStat->append(cacheStat);
         }
-
+        //MMAP_TRACK the load and store functions will log the cycle of every l1 cache miss
+        //originating from the mmaped files.
         inline uint64_t load(Address vAddr, uint64_t curCycle) {
             Address vLineAddr = vAddr >> lineBits;
             uint32_t idx = vLineAddr & setMask;
@@ -142,7 +144,8 @@ class FilterCache : public Cache {
                 return replace(vLineAddr, idx, false, curCycle);
             }
         }
-        //generate dummy accesses here.
+        //MMAP_TRACK generate dummy accesses and latency here maybe increment the respCycle to 
+        //the next available memory operation window and see how that works out..
 
         uint64_t replace(Address vLineAddr, uint32_t idx, bool isLoad, uint64_t curCycle) {
             Address pLineAddr = procMask | vLineAddr;

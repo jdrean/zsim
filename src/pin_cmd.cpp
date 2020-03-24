@@ -72,6 +72,7 @@ PinCmd::PinCmd(Config* conf, const char* configFile, const char* outputDir, uint
             && std::find(args.begin(), args.end(), "-injection") == args.end()) {
         // FIXME(mgao): hack to bypass kernel version check in Pin 2.x.
         // Parent injection.
+        // MMAP_TRACK Will only run with kernel version 4
         args.push_back("-injection");
         args.push_back("child");
         args.push_back("-ifeellucky");
